@@ -16,6 +16,10 @@
             justify-content: center;
             align-items: center;
             color: white;
+            touch-action: manipulation;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-touch-callout: none;
         }
 
         .game-container {
@@ -62,6 +66,7 @@
             border-radius: 10px;
             background: rgba(0, 0, 0, 0.2);
             box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+            touch-action: none;
         }
 
         .pieces-container {
@@ -81,9 +86,12 @@
             display: flex;
             justify-content: center;
             align-items: center;
+            touch-action: none;
+            position: relative;
         }
 
-        .piece-preview:hover {
+        .piece-preview:hover,
+        .piece-preview:active {
             border-color: rgba(255, 255, 255, 0.6);
             background: rgba(255, 255, 255, 0.2);
             transform: scale(1.05);
@@ -93,6 +101,12 @@
             border-color: #4ecdc4;
             background: rgba(78, 205, 196, 0.3);
             box-shadow: 0 0 20px rgba(78, 205, 196, 0.5);
+        }
+
+        .piece-preview.dragging {
+            opacity: 0.8;
+            z-index: 1000;
+            pointer-events: none;
         }
 
         .game-over {
@@ -133,10 +147,45 @@
             transform: scale(1.1);
         }
 
-        .instructions {
-            margin-top: 10px;
-            font-size: 0.9em;
-            opacity: 0.8;
+        @media (max-width: 768px) {
+            body {
+                padding: 10px;
+            }
+
+            .game-container {
+                padding: 20px;
+                max-width: 100%;
+            }
+
+            h1 {
+                font-size: 2em;
+            }
+
+            .game-area {
+                flex-direction: column;
+                gap: 20px;
+            }
+
+            #gameCanvas {
+                width: 100%;
+                max-width: 350px;
+                height: auto;
+            }
+
+            .pieces-container {
+                flex-direction: row;
+                justify-content: center;
+                gap: 15px;
+            }
+
+            .piece-preview {
+                width: 100px;
+                height: 100px;
+            }
+
+            .instructions {
+                font-size: 0.8em;
+            }
         }
     </style>
 </head>
@@ -156,7 +205,9 @@
             </div>
         </div>
         <div class="instructions">
-            Click a piece to select it, then click on the grid to place it.<br>
+            <span class="desktop-instructions">Click a piece to select it, then click on the grid to place it.</span>
+            <span class="mobile-instructions" style="display: none;">Tap and hold a piece, then drag it to the grid to
+                place it.</span><br>
             Clear rows and columns to score points!
         </div>
     </div>
@@ -187,6 +238,12 @@
                     document.getElementById('piece3')
                 ];
 
+                // Touch/drag state
+                this.isDragging = false;
+                this.dragPiece = null;
+                this.dragPieceIndex = -1;
+                this.isMobile = this.detectMobile();
+
                 this.pieceShapes = [
                     [[1]], // Single block
                     [[1, 1]], // Two horizontal
@@ -211,18 +268,184 @@
                 this.init();
             }
 
+            detectMobile() {
+                return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+                    ('ontouchstart' in window) ||
+                    (navigator.maxTouchPoints > 0);
+            }
+
             init() {
                 this.lastPreviewX = -1;
                 this.lastPreviewY = -1;
 
-                this.canvas.addEventListener('click', (e) => this.handleGridClick(e));
-                this.pieceCanvases.forEach((canvas, index) => {
-                    canvas.addEventListener('click', () => this.selectPiece(index));
-                });
+                // Show appropriate instructions
+                if (this.isMobile) {
+                    document.querySelector('.desktop-instructions').style.display = 'none';
+                    document.querySelector('.mobile-instructions').style.display = 'inline';
+                }
 
-                this.setupMouseEvents();
+                this.setupEvents();
                 this.generateNewPieces();
                 this.draw();
+            }
+
+            setupEvents() {
+                if (this.isMobile) {
+                    this.setupTouchEvents();
+                } else {
+                    this.setupMouseEvents();
+                }
+
+                this.canvas.addEventListener('click', (e) => this.handleGridClick(e));
+            }
+
+            setupTouchEvents() {
+                this.pieceCanvases.forEach((canvas, index) => {
+                    // Touch start - begin drag
+                    canvas.addEventListener('touchstart', (e) => {
+                        e.preventDefault();
+                        this.startDrag(index, e.touches[0]);
+                    });
+
+                    // Click fallback for mobile
+                    canvas.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        if (!this.isDragging) {
+                            this.selectPiece(index);
+                        }
+                    });
+                });
+
+                // Global touch move and end events
+                document.addEventListener('touchmove', (e) => {
+                    if (this.isDragging) {
+                        e.preventDefault();
+                        this.handleDrag(e.touches[0]);
+                    }
+                });
+
+                document.addEventListener('touchend', (e) => {
+                    if (this.isDragging) {
+                        e.preventDefault();
+                        this.endDrag(e.changedTouches[0]);
+                    }
+                });
+
+                // Canvas touch events for preview
+                this.canvas.addEventListener('touchmove', (e) => {
+                    if (this.selectedPiece && !this.isDragging) {
+                        e.preventDefault();
+                        this.handleTouchMove(e.touches[0]);
+                    }
+                });
+            }
+
+            startDrag(pieceIndex, touch) {
+                if (!this.pieces[pieceIndex]) return;
+
+                this.isDragging = true;
+                this.dragPiece = this.pieces[pieceIndex];
+                this.dragPieceIndex = pieceIndex;
+                this.selectedPiece = this.dragPiece;
+                this.selectedPieceIndex = pieceIndex;
+
+                // Visual feedback
+                this.pieceCanvases[pieceIndex].classList.add('dragging');
+                this.pieceCanvases.forEach((canvas, i) => {
+                    if (i !== pieceIndex) canvas.classList.remove('selected');
+                });
+
+                // Add haptic feedback if available
+                if (navigator.vibrate) {
+                    navigator.vibrate(50);
+                }
+            }
+
+            handleDrag(touch) {
+                if (!this.isDragging || !this.dragPiece) return;
+
+                const canvasRect = this.canvas.getBoundingClientRect();
+                const x = touch.clientX - canvasRect.left;
+                const y = touch.clientY - canvasRect.top;
+
+                // Check if touch is over canvas
+                if (x >= 0 && x <= this.canvas.width && y >= 0 && y <= this.canvas.height) {
+                    const gridX = Math.floor(x / this.cellSize);
+                    const gridY = Math.floor(y / this.cellSize);
+
+                    if (this.lastPreviewX !== gridX || this.lastPreviewY !== gridY) {
+                        this.lastPreviewX = gridX;
+                        this.lastPreviewY = gridY;
+                        this.drawWithPreview(gridX, gridY);
+                    }
+                }
+            }
+
+            endDrag(touch) {
+                if (!this.isDragging || !this.dragPiece) return;
+
+                const canvasRect = this.canvas.getBoundingClientRect();
+                const x = touch.clientX - canvasRect.left;
+                const y = touch.clientY - canvasRect.top;
+
+                // Check if dropped on canvas
+                if (x >= 0 && x <= this.canvas.width && y >= 0 && y <= this.canvas.height) {
+                    const gridX = Math.floor(x / this.cellSize);
+                    const gridY = Math.floor(y / this.cellSize);
+
+                    if (this.canPlacePiece(gridX, gridY, this.dragPiece.shape)) {
+                        this.placePiece(gridX, gridY, this.dragPiece);
+                        this.pieces[this.dragPieceIndex] = null;
+
+                        this.clearLines();
+                        this.draw();
+                        this.drawPiecePreviews();
+
+                        // Haptic feedback for successful placement
+                        if (navigator.vibrate) {
+                            navigator.vibrate([50, 50, 50]);
+                        }
+
+                        // Check if all pieces are used
+                        if (this.pieces.every(piece => piece === null)) {
+                            this.generateNewPieces();
+                        }
+
+                        // Check game over
+                        if (this.isGameOver()) {
+                            this.gameOver();
+                        }
+                    }
+                }
+
+                // Reset drag state
+                this.isDragging = false;
+                this.dragPiece = null;
+                this.dragPieceIndex = -1;
+                this.selectedPiece = null;
+                this.selectedPieceIndex = -1;
+
+                // Remove visual feedback
+                this.pieceCanvases.forEach(canvas => {
+                    canvas.classList.remove('dragging', 'selected');
+                });
+
+                this.draw();
+            }
+
+            handleTouchMove(touch) {
+                const rect = this.canvas.getBoundingClientRect();
+                const x = touch.clientX - rect.left;
+                const y = touch.clientY - rect.top;
+
+                const gridX = Math.floor(x / this.cellSize);
+                const gridY = Math.floor(y / this.cellSize);
+
+                if (this.lastPreviewX !== gridX || this.lastPreviewY !== gridY) {
+                    this.lastPreviewX = gridX;
+                    this.lastPreviewY = gridY;
+                    this.drawWithPreview(gridX, gridY);
+                }
             }
 
             generateNewPieces() {
@@ -417,6 +640,10 @@
             }
 
             setupMouseEvents() {
+                this.pieceCanvases.forEach((canvas, index) => {
+                    canvas.addEventListener('click', () => this.selectPiece(index));
+                });
+
                 this.canvas.addEventListener('mousemove', (e) => {
                     if (!this.selectedPiece) return;
                     this.handleMouseMove(e);
@@ -513,11 +740,16 @@
                 this.selectedPiece = null;
                 this.selectedPieceIndex = -1;
                 this.pieces = [null, null, null];
+                this.isDragging = false;
+                this.dragPiece = null;
+                this.dragPieceIndex = -1;
 
                 document.getElementById('score').textContent = this.score;
                 document.getElementById('gameOver').style.display = 'none';
 
-                this.pieceCanvases.forEach(canvas => canvas.classList.remove('selected'));
+                this.pieceCanvases.forEach(canvas => {
+                    canvas.classList.remove('selected', 'dragging');
+                });
 
                 this.generateNewPieces();
                 this.draw();
